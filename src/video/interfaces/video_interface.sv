@@ -4,8 +4,8 @@ interface video_interface;
 
     // Current pixel position
     // Per while i define the video mode to 0, cause of that i use [9:0] for x and [8:0] for y
-    logic signed [9:0] x_pos; // Current horizontal pixel position
-    logic signed [8:0] y_pos; // Current vertical pixel position
+    logic signed [10:0] x_pos; // Current horizontal pixel position
+    logic signed [9:0] y_pos; // Current vertical pixel position
 
     video_mode_t mode; // Current video mode (e.g., 480p, 720p, 1080p)
 
