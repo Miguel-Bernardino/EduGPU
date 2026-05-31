@@ -18,26 +18,38 @@ function automatic rgb_color_t square_poligon (
     input logic signed [10:0]   x_offset,
     input logic signed [9:0]    y_offset,
     
-    input logic [7:0]           background_color [2:0],
+    input rgb_color_t           background_color,
     
     input logic signed [10:0]   border_size,
-    input logic [7:0]           border_color [2:0],
+    input rgb_color_t           border_color,
 
-    input [11:0] size
+    input rgb_color_t           default_color,
+    
+    input rgb_color_t           past_color,
+
+    input [11:0]                radius,
+
+    inout logic                 isTransparent
+
 
 );
 
-logic [11:0] distance = size - ((abs_12b(x_pos - x_offset) + abs_12b(y_pos - y_offset) )); 
+logic [11:0] sum = abs_12b(x_pos - x_offset) + abs_12b(y_pos - y_offset);
+logic [11:0] distance = radius - abs_12b(x_pos - x_offset) - abs_12b(y_pos - y_offset);   
 
-if (distance < border_size) begin
+if( distance <= border_size && border_size != 0) begin
+    isTransparent = 1'b0;
     return border_color;
-
-end else if (background_mode == FILL && distance <= size) begin
+end else if (background_mode == FILL &&  distance <= radius  ) begin
+    isTransparent = 1'b0;
     return background_color;
-
-end else begin
-    return '{8'h00, 8'h00, 8'h00}; // Return black color when not in the active area
-
+end else begin 
+    if(!isTransparent) begin
+        return past_color;
+    end else begin
+        isTransparent = 1'b1;
+        return default_color;
+    end
 end
     
 
