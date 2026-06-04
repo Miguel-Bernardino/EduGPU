@@ -20,12 +20,12 @@ module square_poligon_render (
     input logic                    rst_n,
     
     // Video interface 
-    video_timing_interface         in_vif,                // Video interface for receiving pixel positions and sending colors
-    video_interface                out_vif,         // Output color for the current pixel
+    video_timing_interface.sink    in_vif,                // Video interface for receiving pixel positions and sending colors
+    video_interface.source         out_vif,         // Output color for the current pixel
 
     // SQUARE PARAMETERS
-    input logic signed [11:0]      i_h_active,          // Horizontal active resolution (in pixels)
-    input logic signed [11:0]      i_v_active,          // Vertical active resolution
+    input logic        [10:0]      i_h_active,          // Horizontal active resolution (in pixels)
+    input logic        [10:0]      i_v_active,          // Vertical active resolution
     input logic signed [11:0]      i_center_x,          // Center X position of the square (in pixels)
     input logic signed [11:0]      i_center_y,          // Center Y position of the square (in pixels)
     input logic [10:0]             i_radius,            // radius of the square (in pixels)
@@ -41,124 +41,87 @@ module square_poligon_render (
     input rgb_color_t              i_bg_color,          // Background color for the square (used when the pixel is inside the square)
     // BORDER PARAMETERS
     input rgb_color_t              i_border_color,      // Border color for the square (used when the pixel is within the border area)
-
-    input logic                    i_enabled,            // Enable signal for the module
     
     input  logic                   i_isTransparent,        // Flag to indicate if the pixel is transparent (used for blending)
+    
     output logic                   o_isTransparent     // Flag to indicate if the pixel is transparent (used for blending)
-
 );
 
-float_21b a = i_cos_theta;
-float_21b b = (~i_sin_theta + 1'b1); // Negação de i_sin_theta para multiplicação de rotação
-float_21b c = i_sin_theta;
-float_21b d = i_cos_theta;
+// Stage 1: Calculate the relative position of the current pixel to the center of the square
 
 
-logic signed [11:0] x_start_cord = -12'(i_h_active / 2); 
-logic signed [11:0] y_start_cord =  12'(i_v_active / 2);
+logic signed [11:0] x_min, x_max, y_min, y_max; // Boundaries of the active video area centered around (0,0)
 
-wire signed [20:0] x_start_fixed = x_start_cord << 9;
-wire signed [20:0] y_start_fixed = y_start_cord << 9;
+assign x_min = -$signed({1'b0, i_h_active} >> 1);        // Ex: -640 para 720p
+assign x_max =  $signed({1'b0, i_h_active} >> 1) - 1'b1; // Ex: 639 para 720p
 
-wire signed [20:0] center_x_fixed = 21'($signed(i_center_x)) << 9;
-wire signed [20:0] center_y_fixed = 21'($signed(i_center_y)) << 9;
+assign y_min = -$signed({1'b0, i_v_active} >> 1);        // Ex: -360 para 720p
+assign y_max =  $signed({1'b0, i_v_active} >> 1) - 1'b1; // Ex: 359 para 720p
 
-// Agora a multiplicação de ponto fixo (a * -X_c) funcionará perfeitamente no silício:
-wire float_42b p1_at_zero = ($signed(a) * $signed(x_start_fixed - center_x_fixed)) + ($signed(b) * $signed(y_start_fixed - center_y_fixed));
-wire float_42b p2_at_zero = ($signed(c) * $signed(x_start_fixed - center_x_fixed)) + ($signed(d) * $signed(y_start_fixed - center_y_fixed));
+logic signed [11:0] rel_x = x_min  -i_center_x;
+logic signed [11:0] rel_y = y_min  -i_center_y;
 
-// Variáveis de acumulação para os pontos transformados
-float_42b p1_current = p1_at_zero; // Inicializa com a posição do centro transformada
-float_42b p2_current = p2_at_zero; // Inicializa com a posição do centro transformada
+logic signed [12:0] distance; 
+assign distance = $signed({1'b0, i_radius}) - $signed(abs_12b(rel_x)) - $signed(abs_12b(rel_y));
 
-float_42b p1_line_start = p1_at_zero; // Posição do pixel atual no espaço transformado
-float_42b p2_line_start = p2_at_zero; // Posição do pixel atual no espaço transformado
+logic is_inside_square;
+assign is_inside_square = distance[12] == 0; // Flag to indicate if the current pixel is inside the square
 
-//float_42b distance = {1'b0, i_radius, 10'b0} - ( abs_42b(p1_at_zero) + abs_42b(p2_at_zero) ); // Calculate the Manhattan distance
+logic is_inside_border;
+assign is_inside_border = is_inside_square && distance < i_border_size && i_border_size > 0; // Flag to indicate if the current pixel is within the border area
 
-float_42b distance;
-assign distance = $signed(float_42b'(i_radius) << 18) - $signed(abs_42b(p1_current)) - $signed(abs_42b(p2_current)); // Calculate the Manhattan distance
-//assign distance = $signed({1'b0, i_radius}) - $signed(abs_12b(in_vif.x_pos)) - $signed(abs_12b(in_vif.y_pos));
+logic signed [11:0] x_pos = x_min;
+logic signed [11:0] y_pos = y_min;
 
-logic     is_inside_square; 
-assign    is_inside_square = (distance[41] == 1'b0); // Check if the pixel is inside the square
-logic     is_inside_border; 
-assign    is_inside_border = ($signed(distance) <= $signed(float_42b'(i_border_size) << 18) && i_border_size > 0) && is_inside_square; // Check if the pixel is within the border area
-
-logic isTransparent; // Internal transparency flag for blending
-rgb_color_t computed_next_color;
-
-logic vsync_past;
-logic hsync_past;
-
-// Flags to manage the line and frame timing
-wire vsync_strobe = (in_vif.vsync && !vsync_past);
-wire hsync_strobe = (in_vif.hsync && !hsync_past);
-
-always_ff @(posedge clk or negedge rst_n) begin     
+// Stage 2: Increment the pixel position and update the relative coordinates accordingly
+always_ff@(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-        out_vif.x_pos   <= '0;
-        out_vif.y_pos   <= '0;
-        out_vif.de      <= '0;
-        out_vif.hsync   <= '0;
-        out_vif.vsync   <= '0;
-        out_vif.color   <= {8'h00, 8'h00, 8'h00}; // Default background color on reset
-        o_isTransparent <= 1'b1;
-        vsync_past      <= '0;
-        hsync_past      <= '0;
-    end else begin
-        // Pipeline: Copia o status da entrada para a saída
-        out_vif.de    <= in_vif.de;
-        out_vif.hsync <= in_vif.hsync;
-        out_vif.vsync <= in_vif.vsync;
+        // Reset logic
+        x_pos <= x_min;
+        y_pos <= y_min;
+        rel_x <= x_min - i_center_x;
+        rel_y <= y_min - i_center_y;
+    end else if(!in_vif.fifo_AlmostFull) begin
+        // Normal operation logic
+        if(x_pos < x_max) begin
+            x_pos <= x_pos + 1;
+            rel_x <= rel_x + 1; // Update relative X position as we move horizontally
 
-        vsync_past    <= in_vif.vsync;
-        hsync_past    <= in_vif.hsync;
+        end else begin
+            x_pos <= x_min;
+            rel_x <= x_min - i_center_x; // Reset relative X position when we wrap around horizontally
 
-        if(vsync_strobe) begin
-            p1_current <= p1_at_zero; // Reset the accumulated positions at the start of each frame
-            p2_current <= p2_at_zero;
-            p1_line_start <= p1_at_zero; // Reset the line start positions for the new frame
-            p2_line_start <= p2_at_zero;
-            
-        end else if(hsync_strobe) begin
-            // says that we are at the end of the line
-            // increment more 1 pixel in the y axis
-            // the line variables dont have a x increment
-            p1_line_start <= p1_line_start + ($signed(b) << 9);
-            p2_line_start <= p2_line_start + ($signed(d) << 9);
-            
-            
-            // when we are at the end of the line, we need to reset the x position
-            // i.e. we need to move y axis and start at 0 x axis again
-            p1_current <= p1_line_start + ($signed(b) << 9); // Move right by one pixel in the rotated space
-            p2_current <= p2_line_start + ($signed(d) << 9); // Move right by one pixel in the rotated space
-
+            if(y_pos < y_max) begin
+                y_pos <= y_pos + 1;
+                rel_y <= rel_y + 1; // Update relative Y position as we move vertically
+            end else begin
+                y_pos <= y_min;
+                rel_y <= y_min - i_center_y; // Reset relative Y position when we wrap around vertically
+            end
         end
+    end
+end
 
-        if (in_vif.de) begin
-            
-            p1_current <= p1_current + ($signed(a) << 9); // Move right by one pixel in the rotated space
-            p2_current <= p2_current + ($signed(c) << 9); // Move right by one pixel in the rotated space
+// Stage 3: Determine the color of the current pixel based on its position relative to the square and border, and handle transparency for blending with the background color
+always_ff@(posedge clk or negedge rst_n) begin
+    if(!rst_n) begin
+        out_vif.color <= i_default_bg_color; // Default to background color on reset
+        o_isTransparent <= 1'b1; // Default to transparent on reset
+        out_vif.de <= 1'b0;
 
-            if(is_inside_square) begin 
-                if(is_inside_border) begin
-                    out_vif.color <= i_border_color; // Pixel is within the border area
-                    o_isTransparent <= 1'b0; // Not transparent, use border color
+    end else if(!in_vif.fifo_AlmostFull) begin
+        out_vif.de <= 1'b1;
 
-                end else if(i_bg_mode == FILL) begin
-                    out_vif.color <= i_bg_color; // Pixel is inside the square (filled)
-                    o_isTransparent <= 1'b0; // Not transparent, use background color
-                end else begin
-                    if(!i_isTransparent) begin
-                        out_vif.color <= i_past_rgb; // Blend with the default background color
-                        o_isTransparent <= 1'b0; // Not transparent, use blended color
-                    end else begin
-                        out_vif.color <= i_default_bg_color; // Use the default background color
-                        o_isTransparent <= 1'b1; // Transparent, use default background color
-                    end
-                end
+        if (is_inside_square) begin
+
+            if(is_inside_border) begin
+                out_vif.color <= i_border_color; // Pixel is within the border area
+                o_isTransparent <= 1'b0; // Not transparent, use border color
+
+            end else if(i_bg_mode == FILL) begin
+                out_vif.color <= i_bg_color; // Pixel is inside the square (filled)
+                o_isTransparent <= 1'b0; // Not transparent, use background color
+
             end else begin
                 if(!i_isTransparent) begin
                     out_vif.color <= i_past_rgb; // Blend with the default background color
@@ -168,13 +131,24 @@ always_ff @(posedge clk or negedge rst_n) begin
                     o_isTransparent <= 1'b1; // Transparent, use default background color
                 end
             end
-            
+
         end else begin
-            out_vif.color   <= i_default_bg_color; // Use default background color when not in active video
-            o_isTransparent <= 1'b1;
+
+            if(!i_isTransparent) begin
+
+                out_vif.color <= i_past_rgb; // Blend with the default background color
+                o_isTransparent <= 1'b0; // Not transparent, use blended color
+            end else begin
+                
+                out_vif.color <= i_default_bg_color; // Use the default background color
+                o_isTransparent <= 1'b1; // Transparent, use default background color
+            end
         end
+
     end
 end
+
+
 
 
 /*

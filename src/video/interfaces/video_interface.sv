@@ -14,9 +14,14 @@ interface video_interface;
     logic vsync; // Vertical sync signal
     logic hsync; // Horizontal sync signal
     
+    // FIFO control signals
+    //In the FIFO is current empty.
+    logic video_transparence;
+
     modport source (
         output color,
-        output de, vsync, hsync
+        output de, vsync, hsync,
+        output video_transparence
     );
 
     /*
@@ -26,7 +31,8 @@ interface video_interface;
     */
     modport sink (
         input color,
-        input de, vsync, hsync
+        input de, vsync, hsync,
+        input video_transparence
     );
 
 endinterface

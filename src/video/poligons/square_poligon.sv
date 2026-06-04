@@ -20,8 +20,8 @@ module square_poligon_render (
     input logic                    rst_n,
     
     // Video interface 
-    video_timing_interface.sink    in_vif,                // Video interface for receiving pixel positions and sending colors
-    video_interface.source         out_vif,         // Output color for the current pixel
+    video_interface.sink           i_v_if,                // Video interface for receiving pixel positions and sending colors
+    video_interface.source         o_v_if,         // Output color for the current pixel
 
     // SQUARE PARAMETERS
     input logic        [10:0]      i_h_active,          // Horizontal active resolution (in pixels)
@@ -42,9 +42,12 @@ module square_poligon_render (
     // BORDER PARAMETERS
     input rgb_color_t              i_border_color,      // Border color for the square (used when the pixel is within the border area)
     
+    input  logic                   i_AlmostEmpty, i_AlmostFull, // FIFO flow control signals
+
     input  logic                   i_isTransparent,        // Flag to indicate if the pixel is transparent (used for blending)
     
-    output logic                   o_isTransparent     // Flag to indicate if the pixel is transparent (used for blending)
+    output logic                   o_isTransparent,     // Flag to indicate if the pixel is transparent (used for blending)
+    output logic                   o_fifo_enable     // Signal to indicate when the output pixel data is valid and can be written to the FIFO
 );
 
 // Stage 1: Calculate the relative position of the current pixel to the center of the square
@@ -59,7 +62,7 @@ assign y_min = -$signed({1'b0, i_v_active} >> 1);        // Ex: -360 para 720p
 assign y_max =  $signed({1'b0, i_v_active} >> 1) - 1'b1; // Ex: 359 para 720p
 
 logic signed [11:0] rel_x = x_min  -i_center_x;
-logic signed [11:0] rel_y = y_min  -i_center_y;
+logic signed [11:0] rel_y = y_max  -i_center_y;
 
 logic signed [12:0] distance; 
 assign distance = $signed({1'b0, i_radius}) - $signed(abs_12b(rel_x)) - $signed(abs_12b(rel_y));
@@ -71,17 +74,17 @@ logic is_inside_border;
 assign is_inside_border = is_inside_square && distance < i_border_size && i_border_size > 0; // Flag to indicate if the current pixel is within the border area
 
 logic signed [11:0] x_pos = x_min;
-logic signed [11:0] y_pos = y_min;
+logic signed [11:0] y_pos = y_max;
 
 // Stage 2: Increment the pixel position and update the relative coordinates accordingly
 always_ff@(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
         // Reset logic
         x_pos <= x_min;
-        y_pos <= y_min;
+        y_pos <= y_max;
         rel_x <= x_min - i_center_x;
-        rel_y <= y_min - i_center_y;
-    end else if(!in_vif.fifo_AlmostFull) begin
+        rel_y <= y_max - i_center_y;
+    end else if(!i_AlmostFull) begin
         // Normal operation logic
         if(x_pos < x_max) begin
             x_pos <= x_pos + 1;
@@ -91,12 +94,12 @@ always_ff@(posedge clk or negedge rst_n) begin
             x_pos <= x_min;
             rel_x <= x_min - i_center_x; // Reset relative X position when we wrap around horizontally
 
-            if(y_pos < y_max) begin
-                y_pos <= y_pos + 1;
-                rel_y <= rel_y + 1; // Update relative Y position as we move vertically
+            if(y_pos > y_min) begin
+                y_pos <= y_pos - 1;
+                rel_y <= rel_y - 1; // Update relative Y position as we move vertically
             end else begin
-                y_pos <= y_min;
-                rel_y <= y_min - i_center_y; // Reset relative Y position when we wrap around vertically
+                y_pos <= y_max;
+                rel_y <= y_max - i_center_y; // Reset relative Y position when we wrap around vertically
             end
         end
     end
@@ -105,74 +108,48 @@ end
 // Stage 3: Determine the color of the current pixel based on its position relative to the square and border, and handle transparency for blending with the background color
 always_ff@(posedge clk or negedge rst_n) begin
     if(!rst_n) begin
-        out_vif.color <= i_default_bg_color; // Default to background color on reset
-        o_isTransparent <= 1'b1; // Default to transparent on reset
-        out_vif.de <= 1'b0;
+        o_v_if.color <= i_default_bg_color; // Default to background color on reset
+        o_v_if.video_transparence <= 1'b1; // Default to transparent on reset
+        o_v_if.de <= 1'b0;
 
-    end else if(!in_vif.fifo_AlmostFull) begin
-        out_vif.de <= 1'b1;
+    end else if(!i_AlmostFull) begin
+        o_v_if.de <= 1'b1;
 
         if (is_inside_square) begin
 
             if(is_inside_border) begin
-                out_vif.color <= i_border_color; // Pixel is within the border area
-                o_isTransparent <= 1'b0; // Not transparent, use border color
+                o_v_if.color <= i_border_color; // Pixel is within the border area
+                o_v_if.video_transparence <= 1'b0; // Not transparent, use border color
 
             end else if(i_bg_mode == FILL) begin
-                out_vif.color <= i_bg_color; // Pixel is inside the square (filled)
-                o_isTransparent <= 1'b0; // Not transparent, use background color
+                o_v_if.color <= i_bg_color; // Pixel is inside the square (filled)
+                o_v_if.video_transparence <= 1'b0; // Not transparent, use background color
 
             end else begin
-                if(!i_isTransparent) begin
-                    out_vif.color <= i_past_rgb; // Blend with the default background color
-                    o_isTransparent <= 1'b0; // Not transparent, use blended color
+                if(!i_v_if.video_transparence) begin
+                    o_v_if.color <= i_v_if.color; // Blend with the default background color
+                    o_v_if.video_transparence <= 1'b0; // Not transparent, use blended color
                 end else begin
-                    out_vif.color <= i_default_bg_color; // Use the default background color
-                    o_isTransparent <= 1'b1; // Transparent, use default background color
+                    o_v_if.color <= i_default_bg_color; // Use the default background color
+                    o_v_if.video_transparence <= 1'b1; // Transparent, use default background color
                 end
             end
 
         end else begin
 
-            if(!i_isTransparent) begin
+            if(!i_v_if.video_transparence) begin
 
-                out_vif.color <= i_past_rgb; // Blend with the default background color
-                o_isTransparent <= 1'b0; // Not transparent, use blended color
+                o_v_if.color <= i_v_if.color; // Blend with the default background color
+                o_v_if.video_transparence <= 1'b0; // Not transparent, use blended color
             end else begin
                 
-                out_vif.color <= i_default_bg_color; // Use the default background color
-                o_isTransparent <= 1'b1; // Transparent, use default background color
+                o_v_if.color <= i_default_bg_color; // Use the default background color
+                o_v_if.video_transparence <= 1'b1; // Transparent, use default background color
             end
         end
 
     end
 end
-
-
-
-
-/*
-always_comb begin 
-    if (is_inside_square) begin
-        if(is_inside_border) begin
-            o_pixel_color = i_border_color; // Pixel is within the border area
-            io_isTransparent = 1'b0; // Not transparent, use border color
-
-        end else if(i_bg_mode == FILL) begin
-            o_pixel_color = i_bg_color; // Pixel is inside the square (filled)
-            io_isTransparent = 1'b0; // Not transparent, use background color
-        end
-
-    end else begin
-        if(!io_isTransparent) begin
-            o_pixel_color = i_past_rgb; // Blend with the default background color
-        end else begin
-            o_pixel_color = i_default_bg_color; // Use the default background color
-            io_isTransparent = 1'b1;
-        end
-    end
-end
-*/
     
 
 endmodule
