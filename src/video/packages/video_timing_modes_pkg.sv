@@ -1,9 +1,11 @@
 package video_timing_modes_pkg;
 
-    typedef enum logic [1:0] {
-        MODE_480P = 2'b00,   // 640x480   @ 60Hz
-        MODE_720P = 2'b01,   // 1280x720  @ 60Hz
-        MODE_1080P = 2'b10  // 1920x1080 @ 60Hz
+    typedef enum logic [2:0] {
+        MODE_480P_60HZ = 3'b000,   // 640x480    @ 60Hz
+        MODE_720P_60HZ = 3'b001,   // 1280x720   @ 60Hz
+        MODE_720P_30HZ = 3'b010,   // 1280x720   @ 30Hz
+        MODE_1080P_60HZ = 3'b011,  // 1920x1080  @ 60Hz
+        MODE_1080P_30HZ = 3'b100   // 1920x1080  @ 30Hz
     } video_mode_t;
 
     typedef struct packed {
@@ -15,6 +17,7 @@ package video_timing_modes_pkg;
         logic [11:0] h_active;      // Active horizontal pixels
         logic [11:0] h_back_porch;  // Horizontal back porch
         logic [11:0] h_front_porch; // Horizontal front porch
+        logic [11:0] h_total;       // Total horizontal pixels (active + blanking)
         logic        h_polarity;    // Horizontal sync polarity (0: negative, 1: positive)
 
 
@@ -23,6 +26,7 @@ package video_timing_modes_pkg;
         logic [11:0] v_active;      // Active vertical pixels
         logic [11:0] v_back_porch;  // Vertical back porch
         logic [11:0] v_front_porch; // Vertical front porch
+        logic [11:0] v_total;       // Total vertical pixels (active + blanking)s
         logic        v_polarity;    // Vertical sync polarity (0: negative, 1: positive)
 
     } timing_params_t;
